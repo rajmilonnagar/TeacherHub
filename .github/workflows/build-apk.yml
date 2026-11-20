@@ -33,7 +33,7 @@ jobs:
           cp /tmp/pubspec_bak.yaml pubspec.yaml
           rm -rf test
           python3 - <<'PY'
-          import re, glob
+          import re, glob, os
           # build.gradle(.kts): SDK versions
           for f in glob.glob('android/app/build.gradle*'):
               s = open(f).read()
@@ -43,6 +43,22 @@ jobs:
               s = re.sub(r'android\s*\{', 'android {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }', s, count=1)
               open(f, 'w').write(s)
               print(f); print(s)
+          # Plugins (jaise file_picker) ko bhi compileSdk 36 par laana
+          rb = 'android/build.gradle.kts'
+          if os.path.exists(rb):
+              r = open(rb).read()
+              fix = (
+                  'subprojects {\n'
+                  '    afterEvaluate {\n'
+                  '        val ext = extensions.findByName("android")\n'
+                  '        if (ext is com.android.build.gradle.BaseExtension) {\n'
+                  '            ext.compileSdkVersion(36)\n'
+                  '        }\n'
+                  '    }\n'
+                  '}\n\n'
+              )
+              open(rb, 'w').write(fix + r)
+              print(fix + r)
           # Manifest: internet permission + app name
           m = 'android/app/src/main/AndroidManifest.xml'
           s = open(m).read()
