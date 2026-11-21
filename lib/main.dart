@@ -2785,4 +2785,344 @@ class _TeacherListState extends State<TeacherList> {
     }
   }
 
-  @
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<DbRow>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final rows = snap.data ?? [];
+        if (rows.isEmpty) {
+          return const Center(child: Text('Abhi koi teacher nahi', style: TextStyle(color: kGrey)));
+        }
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: rows.length,
+            itemBuilder: (context, i) {
+              final p = rows[i];
+              final active = p['active'] == true;
+              return appCard(
+                child: SwitchListTile(
+                  activeColor: kBrand,
+                  title: Text('${p['full_name'] ?? ''}',
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text('${p['phone'] ?? ''}\n${active ? 'Approved teacher' : 'Approval baaki'}'),
+                  isThreeLine: true,
+                  value: active,
+                  onChanged: (v) => _toggle(p, v),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bank / payment details
+// ---------------------------------------------------------------------------
+
+String maskAcc(String n) =>
+    n.length <= 4 ? n : '${'X' * (n.length - 4)}${n.substring(n.length - 4)}';
+
+Widget kvRow(String k, String v) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 118, child: Text(k, style: const TextStyle(color: kGrey))),
+          Expanded(child: SelectableText(v, style: const TextStyle(fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+
+List<Widget> bankRows(DbRow d, {required bool mask}) {
+  final acc = '${d['account_number'] ?? ''}';
+  return [
+    kvRow('Khata dharak', '${d['account_holder'] ?? ''}'),
+    kvRow('Account number', mask ? maskAcc(acc) : acc),
+    kvRow('IFSC', '${d['ifsc'] ?? ''}'),
+    if ('${d['bank_name'] ?? ''}'.isNotEmpty) kvRow('Bank', '${d['bank_name']}'),
+    if ('${d['upi_id'] ?? ''}'.isNotEmpty) kvRow('UPI ID', '${d['upi_id']}'),
+    kvRow('Phone', '${d['phone'] ?? ''}'),
+  ];
+}
+
+class BankScreen extends StatefulWidget {
+  const BankScreen({super.key});
+  @override
+  State<BankScreen> createState() => _BankScreenState();
+}
+
+class _BankScreenState extends State<BankScreen> {
+  late Future<List<DbRow?>> _future = _load();
+
+  Future<List<DbRow?>> _load() async {
+    final uid = db.auth.currentUser!.id;
+    final d = await db.from('bank_details').select().eq('teacher_id', uid).maybeSingle();
+    final r = await db
+        .from('bank_requests')
+        .select()
+        .eq('teacher_id', uid)
+        .order('created_at', ascending: false)
+        .limit(1)
+        .maybeSingle();
+    return [d, r];
+  }
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _openForm(DbRow? current) async {
+    final ok = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => BankRequestForm(current: current)),
+    );
+    if (ok == true) _refresh();
+  }
+
+  Future<void> _withdraw(DbRow req) async {
+    try {
+      await db.from('bank_requests').delete().eq('id', req['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Bank details'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: FutureBuilder<List<DbRow?>>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator(color: kBrand));
+          }
+          if (snap.hasError) {
+            return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+          }
+          final details = snap.data![0];
+          final req = snap.data![1];
+          final pending = req != null && req['status'] == 'pending';
+          final rejected = req != null && req['status'] == 'rejected';
+          return ListView(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            children: [
+              if (details != null)
+                appCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(children: [
+                          Icon(Icons.verified, color: Colors.green),
+                          SizedBox(width: 8),
+                          Text('Verified bank details',
+                              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                        ]),
+                        const SizedBox(height: 8),
+                        ...bankRows(details, mask: true),
+                      ],
+                    ),
+                  ),
+                )
+              else if (!pending)
+                const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('Abhi bank details nahi jude hain. Bhugtaan ke liye details jodein. Admin verify karega.',
+                      style: TextStyle(color: kGrey, fontSize: 15)),
+                ),
+              if (pending)
+                appCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(children: [
+                          Icon(Icons.hourglass_top, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text('Request verify hone ke liye ruki hai',
+                                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                          ),
+                        ]),
+                        const SizedBox(height: 8),
+                        ...bankRows(req, mask: true),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                              onPressed: () => _withdraw(req),
+                              child: const Text('Request wapas lein')),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (rejected && '${req['admin_note'] ?? ''}'.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                  child: Text('Pichli request reject hui. Admin ka note: ${req['admin_note']}',
+                      style: const TextStyle(color: Colors.red)),
+                ),
+              if (!pending)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+                    onPressed: () => _openForm(details),
+                    child: Text(details == null
+                        ? 'Bank details jodein'
+                        : 'Badlaav ki request bhejein'),
+                  ),
+                ),
+              if (details != null && !pending)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 10, 20, 0),
+                  child: Text(
+                      'Suraksha ke liye details seedha nahi badalte. Naye details ki request admin verify karega, tab badlenge.',
+                      style: TextStyle(color: kGrey, fontSize: 12)),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class BankRequestForm extends StatefulWidget {
+  final DbRow? current;
+  const BankRequestForm({super.key, this.current});
+  @override
+  State<BankRequestForm> createState() => _BankRequestFormState();
+}
+
+class _BankRequestFormState extends State<BankRequestForm> {
+  late final _holder = TextEditingController(text: '${widget.current?['account_holder'] ?? ''}');
+  late final _acc = TextEditingController();
+  late final _acc2 = TextEditingController();
+  late final _ifsc = TextEditingController(text: '${widget.current?['ifsc'] ?? ''}');
+  late final _bank = TextEditingController(text: '${widget.current?['bank_name'] ?? ''}');
+  late final _upi = TextEditingController(text: '${widget.current?['upi_id'] ?? ''}');
+  late final _phone = TextEditingController(text: '${widget.current?['phone'] ?? ''}');
+  final _reason = TextEditingController();
+  bool _busy = false;
+
+  Widget _gap(Widget w) => Padding(padding: const EdgeInsets.only(bottom: 14), child: w);
+
+  Widget _tf(TextEditingController c, String label,
+          {TextInputType? type, String? helper, TextCapitalization cap = TextCapitalization.none}) =>
+      _gap(TextField(
+        controller: c,
+        keyboardType: type,
+        textCapitalization: cap,
+        decoration: InputDecoration(
+            labelText: label, helperText: helper, border: const OutlineInputBorder()),
+      ));
+
+  Future<void> _save() async {
+    final holder = _holder.text.trim();
+    final acc = _acc.text.trim();
+    final ifsc = _ifsc.text.trim().toUpperCase();
+    final phone = _phone.text.trim();
+    if (holder.isEmpty) {
+      snack(context, 'Khata dharak ka naam daalein');
+      return;
+    }
+    if (!RegExp(r'^\d{9,18}$').hasMatch(acc)) {
+      snack(context, 'Account number 9 se 18 ank ka hona chahiye');
+      return;
+    }
+    if (acc != _acc2.text.trim()) {
+      snack(context, 'Dono account number alag hain');
+      return;
+    }
+    if (!RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$').hasMatch(ifsc)) {
+      snack(context, 'IFSC code galat hai (jaise SBIN0001234)');
+      return;
+    }
+    if (!RegExp(r'^\d{10}$').hasMatch(phone)) {
+      snack(context, 'Phone number 10 ank ka hona chahiye');
+      return;
+    }
+    if (widget.current != null && _reason.text.trim().isEmpty) {
+      snack(context, 'Badlaav ka karan likhein');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await db.from('bank_requests').insert({
+        'account_holder': holder,
+        'account_number': acc,
+        'ifsc': ifsc,
+        'bank_name': _bank.text.trim().isEmpty ? null : _bank.text.trim(),
+        'upi_id': _upi.text.trim().isEmpty ? null : _upi.text.trim(),
+        'phone': phone,
+        'reason': _reason.text.trim().isEmpty ? null : _reason.text.trim(),
+      });
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _busy = false);
+        snack(context, 'Nahi hua: ${errText(e)}');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isChange = widget.current != null;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(isChange ? 'Bank details badlaav' : 'Bank details'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _tf(_holder, 'Khata dharak ka naam (jaisa bank me hai)', cap: TextCapitalization.words),
+          _tf(_acc, 'Account number', type: TextInputType.number),
+          _tf(_acc2, 'Account number dobara likhein', type: TextInputType.number),
+          _tf(_ifsc, 'IFSC code', cap: TextCapitalization.characters),
+          _tf(_bank, 'Bank ka naam (optional)'),
+          _tf(_upi, 'UPI ID (optional)'),
+          _tf(_phone, 'Bank se juda phone number', type: TextInputType.phone),
+          if (isChange) _tf(_reason, 'Badlaav ka karan'),
+          const Text(
+              'Ye details admin verify karega, uske baad hi bhugtaan inhi par hoga. Sahi aur apne naam ka khata hi daalein.',
+              style: TextStyle(color: kGrey, fontSize: 12)),
+          const SizedBox(height: 14),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+            onPressed: _busy ? null : _save,
+            child: Text(_busy ? 'Ruko...' : 'Verify ke liye bhejein'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Admin: bank requests verify karna + verified accounts dekhna
+class BankAdminTab extends StatefulWidget {
+  const BankAdminTab({super.key});
+  @override
+  State<BankAdminTab> createState() => _BankAdminTab
