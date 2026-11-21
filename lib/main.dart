@@ -9,7 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 // ====== APNE NAYE (alag) SUPABASE PROJECT KA URL AUR KEY YAHAN DAALEIN ======
 const supabaseUrl = 'https://otkvaumqxqlxtyswveyr.supabase.co';
-const supabaseKey = 'YAHAN_APNI_NAYI_PUBLISHABLE_KEY';
+const supabaseKey = 'sb_publishable_NiXLrRQALuYioSBTcpQntA_JfspBL76';
 // =============================================================================
 
 const Color kBrand = Color(0xFF00796B);
