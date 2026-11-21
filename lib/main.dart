@@ -9,7 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 // ====== APNE NAYE (alag) SUPABASE PROJECT KA URL AUR KEY YAHAN DAALEIN ======
 const supabaseUrl = 'https://otkvaumqxqlxtyswveyr.supabase.co';
-const supabaseKey = 'sb_publishable_NiXLrRQALuYioSBTcpQntA_JfspBL76';
+const supabaseKey = 'YAHAN_APNI_NAYI_PUBLISHABLE_KEY';
 // =============================================================================
 
 const Color kBrand = Color(0xFF00796B);
@@ -181,10 +181,6 @@ class _LoginScreenState extends State<LoginScreen> {
     if (_register && _agreement == null) {
       setState(() => _msg = 'Agreement abhi taiyar nahi hai. Admin ko pehle agreement likhna hai.');
       _loadAgreement();
-      return;
-    }
-    if (_register && '${_agreement!['body']}'.contains('[')) {
-      setState(() => _msg = 'Agreement adhura hai ([ ] baaki hain). Admin ko use poora karna hai.');
       return;
     }
     if (_register && !_agree) {
@@ -1745,16 +1741,6 @@ class _AgreementAdminTabState extends State<AgreementAdminTab> {
                   style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: kBrand),
                 ),
               ),
-              if (body.contains('['))
-                Container(
-                  margin: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                      color: Colors.orange.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
-                  child: const Text(
-                      'Agreement me abhi [ ] wali jagah khali hain. Jab tak ye bhari nahi jati, naye teachers register nahi kar payenge. Neeche "Naya version likhein" dabakar bharein.',
-                      style: TextStyle(color: Colors.deepOrange)),
-                ),
               if (a != null)
                 appCard(
                   child: Padding(
