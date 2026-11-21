@@ -2464,4 +2464,325 @@ class _AdminTasksTabState extends State<AdminTasksTab> {
     }
   }
 
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<DbRow>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final rows = snap.data ?? [];
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 30),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+                  onPressed: _add,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Naya kaam jodein'),
+                ),
+              ),
+              if (rows.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: Text('Abhi koi kaam nahi', style: TextStyle(color: kGrey))),
+                ),
+              for (final t in rows)
+                appCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text('${t['title']}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w700, fontSize: 16)),
+                            ),
+                            TaskChip('${t['status']}'),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                            '${kTypeLabels['${t['content_type']}'] ?? t['content_type']} \u2022 ${rupee(t['amount'])}',
+                            style: const TextStyle(color: kGrey)),
+                        if ('${t['description'] ?? ''}'.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text('${t['description']}'),
+                          ),
+                        if (t['accepted_by'] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                                'Teacher: ${(t['profiles'] is Map ? t['profiles']['full_name'] : '') ?? ''}  ${(t['profiles'] is Map ? t['profiles']['phone'] : '') ?? ''}'
+                                '${t['status'] == 'accepted' ? '\n${leftText(t['accepted_at'])}' : ''}',
+                                style: const TextStyle(color: kGrey)),
+                          ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            if (t['status'] == 'done' && t['paid'] != true)
+                              FilledButton(
+                                style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                                onPressed: () => _update(t, {'paid': true}),
+                                child: const Text('Paid mark karein'),
+                              ),
+                            if (t['status'] == 'done' && t['paid'] == true)
+                              const Chip(label: Text('Paid')),
+                            if (t['status'] == 'accepted')
+                              OutlinedButton(
+                                onPressed: () => _update(t, {
+                                  'status': 'open',
+                                  'accepted_by': null,
+                                  'accepted_at': null,
+                                }),
+                                child: const Text('Wapas open karein'),
+                              ),
+                            if (t['status'] != 'done')
+                              OutlinedButton(
+                                onPressed: () => _delete(t),
+                                child: const Text('Hataein', style: TextStyle(color: Colors.red)),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class TaskForm extends StatefulWidget {
+  const TaskForm({super.key});
+  @override
+  State<TaskForm> createState() => _TaskFormState();
+}
+
+class _TaskFormState extends State<TaskForm> {
+  final _title = TextEditingController();
+  final _desc = TextEditingController();
+  final _amount = TextEditingController();
+  final _subject = TextEditingController();
+  String _type = 'video';
+  String? _class;
+  bool _busy = false;
+
+  Widget _gap(Widget w) => Padding(padding: const EdgeInsets.only(bottom: 14), child: w);
+
+  Future<void> _save() async {
+    final title = _title.text.trim();
+    final amount = num.tryParse(_amount.text.trim());
+    if (title.isEmpty) {
+      snack(context, 'Kaam ka title daalein');
+      return;
+    }
+    if (amount == null || amount <= 0) {
+      snack(context, 'Sahi paisa (rupaye) daalein');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await db.from('tasks').insert({
+        'title': title,
+        'description': _desc.text.trim().isEmpty ? null : _desc.text.trim(),
+        'amount': amount,
+        'content_type': _type,
+        'class_name': _class,
+        'subject': _subject.text.trim().isEmpty ? null : _subject.text.trim(),
+      });
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _busy = false);
+        snack(context, 'Nahi hua: ${errText(e)}');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Naya kaam'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _gap(TextField(
+              controller: _title,
+              decoration: const InputDecoration(
+                  labelText: 'Kaam ka title (jaise: Class 10 Science Chapter 3 video)',
+                  border: OutlineInputBorder()))),
+          _gap(TextField(
+              controller: _amount,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'Paisa (rupaye)', border: OutlineInputBorder()))),
+          _gap(DropdownButtonFormField<String>(
+            value: _type,
+            decoration: const InputDecoration(labelText: 'Content ka prakar', border: OutlineInputBorder()),
+            items: [
+              for (final e in kTypeLabels.entries)
+                DropdownMenuItem(value: e.key, child: Text(e.value))
+            ],
+            onChanged: (v) => setState(() => _type = v ?? _type),
+          )),
+          _gap(DropdownButtonFormField<String?>(
+            value: _class,
+            decoration: const InputDecoration(labelText: 'Class (optional)', border: OutlineInputBorder()),
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('Koi bhi')),
+              for (final c in kClasses) DropdownMenuItem<String?>(value: c, child: Text(c)),
+            ],
+            onChanged: (v) => setState(() => _class = v),
+          )),
+          _gap(TextField(
+              controller: _subject,
+              decoration: const InputDecoration(
+                  labelText: 'Subject (optional)', border: OutlineInputBorder()))),
+          _gap(TextField(
+              controller: _desc,
+              minLines: 4,
+              maxLines: 10,
+              decoration: const InputDecoration(
+                  labelText: 'Poora vivaran (kya karna hai, kitna lamba, shartein)',
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder()))),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+            onPressed: _busy ? null : _save,
+            child: Text(_busy ? 'Ruko...' : 'Kaam jodein'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Admin: reports dekhna
+class AdminReportsTab extends StatefulWidget {
+  const AdminReportsTab({super.key});
+  @override
+  State<AdminReportsTab> createState() => _AdminReportsTabState();
+}
+
+class _AdminReportsTabState extends State<AdminReportsTab> {
+  late Future<List<DbRow>> _future = _load();
+
+  Future<List<DbRow>> _load() async => List<DbRow>.from(await db
+      .from('post_reports')
+      .select('*, profiles(full_name), submissions(title, type)')
+      .order('created_at', ascending: false));
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _delete(DbRow r) async {
+    try {
+      await db.from('post_reports').delete().eq('id', r['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<DbRow>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final rows = snap.data ?? [];
+        if (rows.isEmpty) {
+          return const Center(child: Text('Koi report nahi', style: TextStyle(color: kGrey)));
+        }
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: rows.length,
+            itemBuilder: (context, i) {
+              final r = rows[i];
+              final who = (r['profiles'] is Map) ? '${r['profiles']['full_name'] ?? ''}' : '';
+              final post = (r['submissions'] is Map) ? '${r['submissions']['title'] ?? ''}' : '';
+              return appCard(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Upload: $post',
+                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                      const SizedBox(height: 4),
+                      Text('Report karne wala: $who \u2022 ${timeAgo(r['created_at'])}',
+                          style: const TextStyle(color: kGrey, fontSize: 12)),
+                      const SizedBox(height: 8),
+                      SelectableText('${r['comment']}'),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                            onPressed: () => _delete(r), child: const Text('Hataein (nipta diya)')),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class TeacherList extends StatefulWidget {
+  const TeacherList({super.key});
+  @override
+  State<TeacherList> createState() => _TeacherListState();
+}
+
+class _TeacherListState extends State<TeacherList> {
+  late Future<List<DbRow>> _future = _load();
+
+  Future<List<DbRow>> _load() async => List<DbRow>.from(await db
+      .from('profiles')
+      .select()
+      .neq('role', 'admin')
+      .order('created_at', ascending: false));
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _toggle(DbRow p, bool value) async {
+    try {
+      await db.from('profiles').update({'active': value}).eq('id', p['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
   @
