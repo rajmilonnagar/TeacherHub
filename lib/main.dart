@@ -700,4 +700,362 @@ String metaLine(DbRow r) {
 // Teacher: 4 tab wala main screen
 // ---------------------------------------------------------------------------
 
-class Teacher
+class TeacherShell extends StatefulWidget {
+  final DbRow profile;
+  const TeacherShell({super.key, required this.profile});
+  @override
+  State<TeacherShell> createState() => _TeacherShellState();
+}
+
+class _TeacherShellState extends State<TeacherShell> {
+  int _i = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _i,
+        children: [
+          HomeFeedTab(profile: widget.profile),
+          UploadTab(onDone: () => setState(() => _i = 0)),
+          AccountTab(profile: widget.profile),
+          const TasksTab(),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _i,
+        onDestinationSelected: (i) {
+          setState(() => _i = i);
+          if (i != 1) kRefresh.value++;
+        },
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+          NavigationDestination(
+              icon: Icon(Icons.add_circle_outline),
+              selectedIcon: Icon(Icons.add_circle),
+              label: 'Upload'),
+          NavigationDestination(
+              icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Account'),
+          NavigationDestination(
+              icon: Icon(Icons.assignment_outlined),
+              selectedIcon: Icon(Icons.assignment),
+              label: 'Kaam'),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 1: Home feed (sab teachers ke recent uploads, like, report)
+// ---------------------------------------------------------------------------
+
+class HomeFeedTab extends StatefulWidget {
+  final DbRow profile;
+  const HomeFeedTab({super.key, required this.profile});
+  @override
+  State<HomeFeedTab> createState() => _HomeFeedTabState();
+}
+
+class _HomeFeedTabState extends State<HomeFeedTab> {
+  late Future<List<DbRow>> _future = _load();
+
+  Future<List<DbRow>> _load() async => List<DbRow>.from(await db
+      .from('feed_posts')
+      .select()
+      .order('updated_at', ascending: false)
+      .limit(100));
+
+  void _refresh() {
+    if (mounted) setState(() => _future = _load());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    kRefresh.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    kRefresh.removeListener(_refresh);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Teacher Hub'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: FutureBuilder<List<DbRow>>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator(color: kBrand));
+          }
+          if (snap.hasError) {
+            return Center(
+                child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center),
+            ));
+          }
+          final rows = snap.data ?? [];
+          if (rows.isEmpty) {
+            return const Center(
+                child: Text('Abhi koi upload nahi.\nPehla upload aap karein!',
+                    textAlign: TextAlign.center, style: TextStyle(color: kGrey, fontSize: 16)));
+          }
+          final today = rows.where((r) => isToday(r['created_at'])).length;
+          return RefreshIndicator(
+            onRefresh: () async => _refresh(),
+            child: ListView.builder(
+              padding: const EdgeInsets.only(top: 6, bottom: 20),
+              itemCount: rows.length + 1,
+              itemBuilder: (context, i) {
+                if (i == 0) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 8, 18, 2),
+                    child: Text(
+                        today == 0 ? 'Aaj abhi koi naya upload nahi' : 'Aaj $today naye upload',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 15, color: kBrand)),
+                  );
+                }
+                return PostCard(key: ValueKey(rows[i - 1]['id']), post: rows[i - 1]);
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class PostCard extends StatefulWidget {
+  final DbRow post;
+  const PostCard({super.key, required this.post});
+  @override
+  State<PostCard> createState() => _PostCardState();
+}
+
+class _PostCardState extends State<PostCard> {
+  late bool _liked = widget.post['liked'] == true;
+  late int _likes = numOf(widget.post['like_count']).toInt();
+
+  String get _myId => db.auth.currentUser!.id;
+  bool get _mine => '${widget.post['teacher_id']}' == _myId;
+
+  Future<void> _toggleLike() async {
+    final was = _liked;
+    setState(() {
+      _liked = !was;
+      _likes += was ? -1 : 1;
+    });
+    try {
+      if (was) {
+        await db
+            .from('post_likes')
+            .delete()
+            .eq('submission_id', widget.post['id'])
+            .eq('user_id', _myId);
+      } else {
+        await db
+            .from('post_likes')
+            .insert({'submission_id': widget.post['id'], 'user_id': _myId});
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _liked = was;
+          _likes += was ? 1 : -1;
+        });
+        snack(context, 'Nahi hua: ${errText(e)}');
+      }
+    }
+  }
+
+  Future<void> _report() async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Report karein'),
+        content: TextField(
+          controller: ctrl,
+          minLines: 3,
+          maxLines: 5,
+          decoration: const InputDecoration(
+              labelText: 'Kya galat hai? Comment likhein', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Bhejein')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final text = ctrl.text.trim();
+    if (text.isEmpty) {
+      if (mounted) snack(context, 'Comment khali nahi ho sakta');
+      return;
+    }
+    try {
+      await db.from('post_reports').insert({
+        'submission_id': widget.post['id'],
+        'user_id': _myId,
+        'comment': text,
+      });
+      if (mounted) snack(context, 'Report admin ko bhej diya gaya');
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.post;
+    final name = '${p['teacher_name'] ?? ''}';
+    final type = '${p['type'] ?? ''}';
+    final desc = '${p['description'] ?? ''}';
+    final body = '${p['body'] ?? ''}';
+    final preview = desc.isNotEmpty ? desc : body;
+    final created = DateTime.tryParse('${p['created_at']}');
+    final updated = DateTime.tryParse('${p['updated_at']}');
+    final edited = created != null &&
+        updated != null &&
+        updated.difference(created).inMinutes >= 1;
+    final status = '${p['status']}';
+    return appCard(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Avatar(url: p['avatar_url'] as String?, name: name, radius: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name.isEmpty ? 'Teacher' : name,
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
+                      Text(
+                          '${timeAgo(edited ? p['updated_at'] : p['created_at'])}${edited ? ' \u2022 badla gaya' : ''}',
+                          style: const TextStyle(color: kGrey, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                if (status == 'pending') const StatusChip('pending'),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(typeIcon(type), color: kBrand, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('${p['title']}',
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(metaLine(p), style: const TextStyle(color: kGrey, fontSize: 13)),
+            if (preview.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(preview, maxLines: 3, overflow: TextOverflow.ellipsis),
+              ),
+            const Divider(height: 22),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _toggleLike,
+                  icon: Icon(_liked ? Icons.favorite : Icons.favorite_border,
+                      color: _liked ? Colors.red : kGrey),
+                  label: Text('Like${_likes > 0 ? ' ($_likes)' : ''}',
+                      style: TextStyle(color: _liked ? Colors.red : kGrey)),
+                ),
+                const Spacer(),
+                if (!_mine)
+                  TextButton.icon(
+                    onPressed: _report,
+                    icon: const Icon(Icons.flag_outlined, color: kGrey),
+                    label: const Text('Report', style: TextStyle(color: kGrey)),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2: Upload (step by step)
+// ---------------------------------------------------------------------------
+
+const List<String> kMediums = ['Assamese', 'Bengali', 'Hindi', 'English', 'Bodo'];
+const List<String> kSubjects = [
+  'Assamese',
+  'English',
+  'Hindi',
+  'Mathematics',
+  'Science',
+  'Social Science',
+  'Physics',
+  'Chemistry',
+  'Biology',
+  'History',
+  'Geography',
+  'Political Science',
+  'Economics',
+  'Accountancy',
+  'Business Studies',
+  'Computer',
+  'Sanskrit',
+  'Other',
+];
+final List<String> kClasses = [for (var i = 1; i <= 12; i++) 'Class $i'];
+
+class UploadTab extends StatefulWidget {
+  final VoidCallback onDone;
+  const UploadTab({super.key, required this.onDone});
+  @override
+  State<UploadTab> createState() => _UploadTabState();
+}
+
+class _UploadTabState extends State<UploadTab> {
+  int _n = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Naya upload'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: SubmissionWizard(
+        key: ValueKey(_n),
+        onSaved: () {
+          setState(() => _n++);
+          kRefresh.value++;
+          snack(context, 'Review ke liye bhej diya gaya');
+          widget.onDone();
+        },
+      ),
+    );
+  }
+}
+
+/// Edit karne ya kaam jama karne ke liye alag page
+class WizardPage extends Stateless
