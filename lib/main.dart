@@ -9,7 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 // ====== APNE SUPABASE PROJECT KA URL AUR KEY YAHAN DAALEIN ======
 const supabaseUrl = 'https://otkvaumqxqlxtyswveyr.supabase.co';
-const supabaseKey = 'YAHAN_APNI_NAYI_PUBLISHABLE_KEY';
+const supabaseKey = 'sb_publishable_NiXLrRQALuYioSBTcpQntA_JfspBL76';
 // Edge Function ka slug (Supabase me jo URL ke aakhir me hai)
 const String kDriveFn = 'swift-function';
 // =================================================================
