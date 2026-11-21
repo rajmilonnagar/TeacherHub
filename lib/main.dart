@@ -1433,4 +1433,330 @@ class _SubmissionWizardState extends State<SubmissionWizard> {
         Step(
           title: const Text('Content ki details'),
           isActive: _step >= 4,
-          state: Step
+          state: StepState.indexed,
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _gap(DropdownButtonFormField<String>(
+                value: _type,
+                decoration: const InputDecoration(
+                    labelText: 'Kya upload karna hai', border: OutlineInputBorder()),
+                items: [
+                  for (final e in kTypeLabels.entries)
+                    DropdownMenuItem(value: e.key, child: Text(e.value))
+                ],
+                onChanged: (_busy || widget.task != null)
+                    ? null
+                    : (v) => setState(() {
+                          _type = v ?? _type;
+                          _picked = null;
+                        }),
+              )),
+              _gap(TextField(
+                  controller: _title,
+                  decoration:
+                      const InputDecoration(labelText: 'Title', border: OutlineInputBorder()))),
+              if (_isFile) ...[
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _pick,
+                  icon: const Icon(Icons.attach_file),
+                  label: Text(_picked == null
+                      ? (hasOld ? 'Nayi file chunein (optional)' : 'File chunein')
+                      : 'Badlein'),
+                ),
+                if (_picked != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                        '${_picked!.name}  (${(_picked!.size / (1024 * 1024)).toStringAsFixed(1)} MB)',
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                if (hasOld && _picked == null)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('Pehle se file jodi hui hai', style: TextStyle(color: kGrey)),
+                  ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 8, bottom: 14),
+                  child: Text(
+                      'File seedha sanstha ke Google Drive me jaati hai. Upload ke baad aap use delete nahi kar sakte. Badi video ke liye Wi-Fi use karein aur upload poora hone tak app na band karein.',
+                      style: TextStyle(color: kGrey, fontSize: 12)),
+                ),
+              ] else
+                _gap(TextField(
+                  controller: _body,
+                  minLines: 8,
+                  maxLines: 20,
+                  decoration: InputDecoration(
+                      labelText: '${kTypeLabels[_type]} yahan likhein',
+                      alignLabelWithHint: true,
+                      border: const OutlineInputBorder()),
+                )),
+              _gap(TextField(
+                  controller: _desc,
+                  minLines: 2,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                      labelText: 'Chhota vivaran (optional)', border: OutlineInputBorder()))),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Checkbox(
+                    value: _declared,
+                    activeColor: kBrand,
+                    onChanged: (v) => setState(() => _declared = v ?? false),
+                  ),
+                  const Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text(kDeclarationText, style: TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_busy && _progress != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Column(
+                    children: [
+                      LinearProgressIndicator(value: _progress, color: kBrand),
+                      const SizedBox(height: 4),
+                      Text('Upload ho raha hai... ${(_progress! * 100).toStringAsFixed(0)}%'),
+                    ],
+                  ),
+                ),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+                  onPressed: _busy ? null : _save,
+                  child: Text(_busy ? 'Ruko...' : 'Review ke liye bhejein'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3: Account
+// ---------------------------------------------------------------------------
+
+class AccountTab extends StatefulWidget {
+  final DbRow profile;
+  const AccountTab({super.key, required this.profile});
+  @override
+  State<AccountTab> createState() => _AccountTabState();
+}
+
+class _AccountTabState extends State<AccountTab> {
+  late Future<Map<String, dynamic>> _future = _load();
+  bool _photoBusy = false;
+
+  Future<Map<String, dynamic>> _load() async {
+    final uid = db.auth.currentUser!.id;
+    try {
+      await db.rpc('release_expired_tasks');
+    } catch (_) {}
+    final p = await db.from('profiles').select().eq('id', uid).maybeSingle();
+    final bank = await db.from('bank_details').select().eq('teacher_id', uid).maybeSingle();
+    final tasks = List<DbRow>.from(await db
+        .from('tasks')
+        .select()
+        .eq('accepted_by', uid)
+        .order('accepted_at', ascending: false));
+    DbRow? a;
+    try {
+      a = await fetchAgreement();
+    } catch (_) {}
+    return {'p': p, 'bank': bank, 'tasks': tasks, 'a': a};
+  }
+
+  void _refresh() {
+    if (mounted) setState(() => _future = _load());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    kRefresh.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    kRefresh.removeListener(_refresh);
+    super.dispose();
+  }
+
+  Future<void> _changePhoto() async {
+    final res = await FilePicker.platform.pickFiles(type: FileType.image);
+    if (res == null || res.files.isEmpty) return;
+    final f = res.files.first;
+    if (f.path == null) return;
+    if (f.size > 5 * 1024 * 1024) {
+      if (mounted) snack(context, 'Photo 5 MB se chhoti honi chahiye');
+      return;
+    }
+    setState(() => _photoBusy = true);
+    try {
+      final uid = db.auth.currentUser!.id;
+      final ext = f.name.toLowerCase().split('.').last;
+      final mime = ext == 'png' ? 'image/png' : (ext == 'webp' ? 'image/webp' : 'image/jpeg');
+      final path = '$uid/avatar';
+      await db.storage.from('avatars').upload(path, File(f.path!),
+          fileOptions: FileOptions(upsert: true, contentType: mime));
+      final url =
+          '${db.storage.from('avatars').getPublicUrl(path)}?v=${DateTime.now().millisecondsSinceEpoch}';
+      await db.rpc('set_avatar', params: {'url': url});
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Photo nahi lagi: ${errText(e)}');
+    }
+    if (mounted) setState(() => _photoBusy = false);
+  }
+
+  Future<void> _submitTask(DbRow t) async {
+    final ok = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => WizardPage(task: t)),
+    );
+    if (ok == true) {
+      kRefresh.value++;
+      if (mounted) snack(context, 'Kaam review ke liye bhej diya gaya');
+    }
+  }
+
+  Widget _heading(String t) => Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 2),
+        child: Text(t,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: kBrand)),
+      );
+
+  Widget _menu(IconData icon, String title, String? sub, VoidCallback onTap) => appCard(
+        child: ListTile(
+          leading: Icon(icon, color: kBrand),
+          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: sub == null ? null : Text(sub),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: onTap,
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Account'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: FutureBuilder<Map<String, dynamic>>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator(color: kBrand));
+          }
+          if (snap.hasError) {
+            return Center(
+                child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center),
+            ));
+          }
+          final d = snap.data!;
+          final p = (d['p'] as DbRow?) ?? widget.profile;
+          final bank = d['bank'] as DbRow?;
+          final tasks = d['tasks'] as List<DbRow>;
+          final a = d['a'] as DbRow?;
+          final name = '${p['full_name'] ?? ''}';
+          final working = tasks.where((t) => t['status'] == 'accepted' || t['status'] == 'submitted').toList();
+          final done = tasks.where((t) => t['status'] == 'done').toList();
+          num earned = 0, paid = 0;
+          for (final t in done) {
+            earned += numOf(t['amount']);
+            if (t['paid'] == true) paid += numOf(t['amount']);
+          }
+          final due = earned - paid;
+          return RefreshIndicator(
+            onRefresh: () async => _refresh(),
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 30),
+              children: [
+                const SizedBox(height: 16),
+                Center(
+                  child: Stack(
+                    children: [
+                      Avatar(url: p['avatar_url'] as String?, name: name, radius: 46),
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: InkWell(
+                          onTap: _photoBusy ? null : _changePhoto,
+                          child: CircleAvatar(
+                            radius: 16,
+                            backgroundColor: kBrand,
+                            child: _photoBusy
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.camera_alt, size: 16, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Center(
+                  child: Text(name,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                ),
+                Center(
+                  child: Text('${p['phone'] ?? ''}', style: const TextStyle(color: kGrey)),
+                ),
+                _heading('Mere kaam (${working.length})'),
+                if (working.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(18, 6, 18, 0),
+                    child: Text('Abhi koi accepted kaam nahi. "Kaam" tab se kaam lein.',
+                        style: TextStyle(color: kGrey)),
+                  ),
+                for (final t in working)
+                  appCard(
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(typeIcon('${t['content_type']}'), color: kBrand),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text('${t['title']}',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700, fontSize: 15)),
+                              ),
+                              Text(rupee(t['amount']),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w800, color: Colors.green)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          if (t['status'] == 'accepted') ...[
+                            Text(leftText(t['accepted_at']),
+                                style: TextStyle(
+                                    color: leftIsShort(t['accepted_at']) ? Colors.red : kGrey,
+                                    fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton(
+                                style: Filled
