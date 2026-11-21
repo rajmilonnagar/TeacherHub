@@ -1058,4 +1058,379 @@ class _UploadTabState extends State<UploadTab> {
 }
 
 /// Edit karne ya kaam jama karne ke liye alag page
-class WizardPage extends Stateless
+class WizardPage extends StatelessWidget {
+  final DbRow? row;
+  final DbRow? task;
+  const WizardPage({super.key, this.row, this.task});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(row != null ? 'Badlein' : 'Kaam jama karein'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: SubmissionWizard(
+        row: row,
+        task: task,
+        onSaved: () => Navigator.pop(context, true),
+      ),
+    );
+  }
+}
+
+class SubmissionWizard extends StatefulWidget {
+  final DbRow? row;
+  final DbRow? task;
+  final VoidCallback onSaved;
+  const SubmissionWizard({super.key, this.row, this.task, required this.onSaved});
+  @override
+  State<SubmissionWizard> createState() => _SubmissionWizardState();
+}
+
+class _SubmissionWizardState extends State<SubmissionWizard> {
+  final _title = TextEditingController();
+  final _desc = TextEditingController();
+  final _body = TextEditingController();
+  final _chapter = TextEditingController();
+  final _subjectOther = TextEditingController();
+  String? _medium;
+  String? _class;
+  String? _subject;
+  String _type = 'video';
+  int _step = 0;
+  PlatformFile? _picked;
+  double? _progress;
+  bool _declared = false;
+  bool _busy = false;
+
+  bool get _isFile => kFileTypes.contains(_type);
+
+  String get _finalSubject =>
+      _subject == 'Other' ? _subjectOther.text.trim() : (_subject ?? '');
+
+  @override
+  void initState() {
+    super.initState();
+    final r = widget.row;
+    final t = widget.task;
+    _medium = r?['medium'] as String?;
+    _class = (r?['class_name'] ?? t?['class_name']) as String?;
+    final subj = (r?['subject'] ?? t?['subject']) as String?;
+    if (subj != null && subj.isNotEmpty) {
+      if (kSubjects.contains(subj) && subj != 'Other') {
+        _subject = subj;
+      } else {
+        _subject = 'Other';
+        _subjectOther.text = subj;
+      }
+    }
+    _chapter.text = '${r?['chapter'] ?? ''}';
+    _title.text = '${r?['title'] ?? t?['title'] ?? ''}';
+    _desc.text = '${r?['description'] ?? ''}';
+    _body.text = '${r?['body'] ?? ''}';
+    _type = '${r?['type'] ?? t?['content_type'] ?? 'video'}';
+    if (!kTypeLabels.containsKey(_type)) _type = 'video';
+    if (r != null) _step = 4;
+  }
+
+  String _mime(String name) {
+    final e = name.toLowerCase().split('.').last;
+    const m = {
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'mkv': 'video/x-matroska',
+      'webm': 'video/webm',
+      '3gp': 'video/3gpp',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'webp': 'image/webp',
+      'pdf': 'application/pdf',
+    };
+    return m[e] ?? 'application/octet-stream';
+  }
+
+  Future<void> _pick() async {
+    final ft = _type == 'video'
+        ? FileType.video
+        : (_type == 'photo' ? FileType.image : FileType.custom);
+    final res = await FilePicker.platform.pickFiles(
+      type: ft,
+      allowedExtensions: _type == 'pdf' ? ['pdf'] : null,
+    );
+    if (res == null || res.files.isEmpty) return;
+    setState(() => _picked = res.files.first);
+  }
+
+  Future<Map<String, dynamic>> _uploadFile(PlatformFile f) async {
+    final path = f.path;
+    if (path == null) throw 'File ka rasta nahi mila';
+    final file = File(path);
+    final len = await file.length();
+    final mime = _mime(f.name);
+    if (mime == 'application/octet-stream') throw 'Is prakar ki file allowed nahi hai';
+
+    final res = await db.functions.invoke(kDriveFn,
+        body: {'action': 'session', 'name': f.name, 'mime': mime, 'size': len});
+    final data = res.data;
+    if (data is! Map || data['uploadUrl'] == null) {
+      throw 'Drive se upload ki ijazat nahi mili';
+    }
+
+    final req = http.StreamedRequest('PUT', Uri.parse(data['uploadUrl'] as String));
+    req.headers['Content-Type'] = mime;
+    req.contentLength = len;
+    var sent = 0;
+    var last = 0.0;
+    final sending = req.send();
+    await req.sink.addStream(file.openRead().map((chunk) {
+      sent += chunk.length;
+      final p = sent / len;
+      if (p - last >= 0.01 && mounted) {
+        last = p;
+        setState(() => _progress = p);
+      }
+      return chunk;
+    }));
+    await req.sink.close();
+    final resp = await sending;
+    final text = await resp.stream.bytesToString();
+    if (resp.statusCode != 200 && resp.statusCode != 201) {
+      throw 'Upload poora nahi hua (code ${resp.statusCode}). Dobara try karein.';
+    }
+    final j = jsonDecode(text) as Map<String, dynamic>;
+    if (j['id'] == null) throw 'Upload ke baad file ID nahi mili';
+    return {'id': j['id'], 'name': f.name};
+  }
+
+  void _goto(int s, String msg) {
+    setState(() => _step = s);
+    snack(context, msg);
+  }
+
+  void _next() {
+    if (_step == 0 && _medium == null) {
+      snack(context, 'Pehle medium chunein');
+      return;
+    }
+    if (_step == 1 && _class == null) {
+      snack(context, 'Pehle class chunein');
+      return;
+    }
+    if (_step == 2 && _finalSubject.isEmpty) {
+      snack(context, 'Pehle subject chunein');
+      return;
+    }
+    if (_step == 3 && _chapter.text.trim().isEmpty) {
+      snack(context, 'Chapter ka naam ya number likhein');
+      return;
+    }
+    setState(() => _step++);
+  }
+
+  Future<void> _save() async {
+    if (_medium == null) return _goto(0, 'Medium chunein');
+    if (_class == null) return _goto(1, 'Class chunein');
+    if (_finalSubject.isEmpty) return _goto(2, 'Subject chunein');
+    if (_chapter.text.trim().isEmpty) return _goto(3, 'Chapter likhein');
+    final title = _title.text.trim();
+    if (title.isEmpty) {
+      snack(context, 'Title daalna zaroori hai');
+      return;
+    }
+    final old = widget.row;
+    final hasOldFile = old != null &&
+        old['type'] == _type &&
+        ('${old['drive_file_id'] ?? ''}'.isNotEmpty || '${old['link'] ?? ''}'.isNotEmpty);
+    if (_isFile && _picked == null && !hasOldFile) {
+      snack(context, 'Pehle file chunein');
+      return;
+    }
+    if (!_isFile && _body.text.trim().isEmpty) {
+      snack(context, '${kTypeLabels[_type]} likhna zaroori hai');
+      return;
+    }
+    if (!_declared) {
+      snack(context, 'Pehle copyright declaration par tick karein');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _progress = null;
+    });
+    try {
+      final vals = <String, dynamic>{
+        'title': title,
+        'medium': _medium,
+        'class_name': _class,
+        'subject': _finalSubject,
+        'chapter': _chapter.text.trim(),
+        'type': _type,
+        'description': _desc.text.trim().isEmpty ? null : _desc.text.trim(),
+        'status': 'pending',
+        'admin_note': null,
+        'declaration_accepted': true,
+        'declared_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      if (old == null && widget.task != null) vals['task_id'] = widget.task!['id'];
+      if (_isFile) {
+        if (_picked != null) {
+          final up = await _uploadFile(_picked!);
+          vals['drive_file_id'] = up['id'];
+          vals['drive_link'] = 'https://drive.google.com/file/d/${up['id']}/view';
+          vals['file_name'] = up['name'];
+          vals['link'] = null;
+          vals['body'] = null;
+        }
+      } else {
+        final body = _body.text.trim();
+        vals['body'] = body;
+        vals['link'] = null;
+        try {
+          final res = await db.functions.invoke(kDriveFn, body: {
+            'action': 'text',
+            'name': '$title.txt',
+            'content':
+                '$title\n${kTypeLabels[_type]} | $_medium | $_class | $_finalSubject | ${_chapter.text.trim()}\n\n$body\n',
+          });
+          final d = res.data;
+          if (d is Map && d['fileId'] != null) {
+            vals['drive_file_id'] = d['fileId'];
+            vals['drive_link'] = d['link'];
+          }
+        } catch (_) {}
+      }
+      if (old == null) {
+        await db.from('submissions').insert(vals);
+      } else {
+        await db.from('submissions').update(vals).eq('id', old['id']);
+      }
+      if (mounted) widget.onSaved();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _busy = false);
+        snack(context, 'Save nahi hua: ${errText(e)}');
+      }
+    }
+  }
+
+  Widget _gap(Widget w) => Padding(padding: const EdgeInsets.only(bottom: 14), child: w);
+
+  Widget _chips(List<String> items, String? sel, void Function(String) on) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        for (final s in items)
+          ChoiceChip(
+            label: Text(s),
+            selected: sel == s,
+            selectedColor: kBrand.withOpacity(0.2),
+            onSelected: _busy ? null : (_) => on(s),
+          ),
+      ],
+    );
+  }
+
+  StepState _st(int i, bool done) =>
+      (done && _step > i) ? StepState.complete : StepState.indexed;
+
+  @override
+  Widget build(BuildContext context) {
+    final old = widget.row;
+    final hasOld = old != null &&
+        old['type'] == _type &&
+        ('${old['drive_file_id'] ?? ''}'.isNotEmpty || '${old['link'] ?? ''}'.isNotEmpty);
+    return Stepper(
+      currentStep: _step,
+      onStepTapped: _busy ? null : (i) => setState(() => _step = i),
+      controlsBuilder: (context, d) {
+        return Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: Row(
+            children: [
+              if (_step < 4)
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: kBrand),
+                  onPressed: _next,
+                  child: const Text('Aage'),
+                ),
+              if (_step > 0)
+                TextButton(
+                    onPressed: _busy ? null : () => setState(() => _step--),
+                    child: const Text('Peeche')),
+            ],
+          ),
+        );
+      },
+      steps: [
+        Step(
+          title: Text(_medium == null ? 'Bhasha / Medium' : 'Medium: $_medium'),
+          isActive: _step >= 0,
+          state: _st(0, _medium != null),
+          content: Align(
+            alignment: Alignment.centerLeft,
+            child: _chips(kMediums, _medium, (s) {
+              setState(() {
+                _medium = s;
+                _step = 1;
+              });
+            }),
+          ),
+        ),
+        Step(
+          title: Text(_class == null ? 'Class' : _class!),
+          isActive: _step >= 1,
+          state: _st(1, _class != null),
+          content: Align(
+            alignment: Alignment.centerLeft,
+            child: _chips(kClasses, _class, (s) {
+              setState(() {
+                _class = s;
+                _step = 2;
+              });
+            }),
+          ),
+        ),
+        Step(
+          title: Text(_finalSubject.isEmpty ? 'Subject' : 'Subject: $_finalSubject'),
+          isActive: _step >= 2,
+          state: _st(2, _finalSubject.isNotEmpty),
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _chips(kSubjects, _subject, (s) {
+                setState(() {
+                  _subject = s;
+                  if (s != 'Other') _step = 3;
+                });
+              }),
+              if (_subject == 'Other')
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: TextField(
+                    controller: _subjectOther,
+                    decoration: const InputDecoration(
+                        labelText: 'Subject ka naam', border: OutlineInputBorder()),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        Step(
+          title: Text(_chapter.text.trim().isEmpty ? 'Chapter' : 'Chapter: ${_chapter.text.trim()}'),
+          isActive: _step >= 3,
+          state: _st(3, _chapter.text.trim().isNotEmpty),
+          content: TextField(
+            controller: _chapter,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+                labelText: 'Chapter ka naam ya number', border: OutlineInputBorder()),
+          ),
+        ),
+        Step(
+          title: const Text('Content ki details'),
+          isActive: _step >= 4,
+          state: Step
