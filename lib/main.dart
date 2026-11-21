@@ -2091,4 +2091,377 @@ class _TasksTabState extends State<TasksTab> {
                         style: const TextStyle(
                             fontWeight: FontWeight.w800, fontSize: 16, color: Colors.green)),
                     onTap: () => Navigator.push(
-                        context, Material
+                        context, MaterialPageRoute(builder: (_) => TaskDetailScreen(task: t))),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class TaskDetailScreen extends StatefulWidget {
+  final DbRow task;
+  const TaskDetailScreen({super.key, required this.task});
+  @override
+  State<TaskDetailScreen> createState() => _TaskDetailScreenState();
+}
+
+class _TaskDetailScreenState extends State<TaskDetailScreen> {
+  bool _busy = false;
+
+  Future<void> _accept() async {
+    setState(() => _busy = true);
+    try {
+      await db.rpc('accept_task', params: {'t_id': widget.task['id']});
+      kRefresh.value++;
+      if (mounted) {
+        snack(context, 'Kaam accept ho gaya. Account tab me "Mere kaam" dekhein.');
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      kRefresh.value++;
+      if (mounted) {
+        setState(() => _busy = false);
+        snack(context, errText(e));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.task;
+    final type = '${t['content_type']}';
+    final desc = '${t['description'] ?? ''}';
+    final extra = <String>[
+      '${t['class_name'] ?? ''}',
+      '${t['subject'] ?? ''}',
+    ].where((s) => s.isNotEmpty).join(' \u2022 ');
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Kaam ki details'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          Row(
+            children: [
+              Icon(typeIcon(type), color: kBrand, size: 30),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('${t['title']}',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text(rupee(t['amount']),
+                    style: const TextStyle(
+                        color: Colors.green, fontWeight: FontWeight.w800, fontSize: 16)),
+              ),
+              const SizedBox(width: 10),
+              Text(kTypeLabels[type] ?? type, style: const TextStyle(color: kGrey)),
+            ],
+          ),
+          if (extra.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(extra, style: const TextStyle(color: kGrey)),
+            ),
+          const SizedBox(height: 16),
+          Text(desc.isEmpty ? 'Koi extra vivaran nahi diya gaya.' : desc,
+              style: const TextStyle(fontSize: 15, height: 1.5)),
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
+            child: const Text(
+                'Accept karne ke baad 3 din ke andar kaam karke review ke liye bhejna hoga. Nahi bheja to kaam wapas list me chala jayega aur doosre teacher le sakte hain.',
+                style: TextStyle(color: Colors.deepOrange)),
+          ),
+          const SizedBox(height: 18),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+            onPressed: _busy ? null : _accept,
+            child: Text(_busy ? 'Ruko...' : 'Ye kaam accept karein'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+class AdminHome extends StatelessWidget {
+  const AdminHome({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 8,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Admin'),
+          backgroundColor: kBrand,
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+                tooltip: 'Logout',
+                icon: const Icon(Icons.logout),
+                onPressed: () => db.auth.signOut()),
+          ],
+          bottom: const TabBar(
+            isScrollable: true,
+            indicatorColor: Colors.white,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            tabs: [
+              Tab(text: 'Pending'),
+              Tab(text: 'Approved'),
+              Tab(text: 'Rejected'),
+              Tab(text: 'Kaam'),
+              Tab(text: 'Reports'),
+              Tab(text: 'Teachers'),
+              Tab(text: 'Bank'),
+              Tab(text: 'Agreement'),
+            ],
+          ),
+        ),
+        body: const TabBarView(
+          children: [
+            SubmissionList(status: 'pending'),
+            SubmissionList(status: 'approved'),
+            SubmissionList(status: 'rejected'),
+            AdminTasksTab(),
+            AdminReportsTab(),
+            TeacherList(),
+            BankAdminTab(),
+            AgreementAdminTab(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SubmissionList extends StatefulWidget {
+  final String status;
+  const SubmissionList({super.key, required this.status});
+  @override
+  State<SubmissionList> createState() => _SubmissionListState();
+}
+
+class _SubmissionListState extends State<SubmissionList> {
+  late Future<List<DbRow>> _future = _load();
+
+  Future<List<DbRow>> _load() async => List<DbRow>.from(await db
+      .from('submissions')
+      .select('*, profiles(full_name, phone)')
+      .eq('status', widget.status)
+      .order('created_at', ascending: false));
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _setStatus(DbRow r, String status, {String? note}) async {
+    try {
+      await db
+          .from('submissions')
+          .update({'status': status, 'admin_note': note}).eq('id', r['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  Future<void> _reject(DbRow r) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reject karein'),
+        content: TextField(
+          controller: ctrl,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+              labelText: 'Teacher ke liye note (kya theek karna hai)',
+              border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reject')),
+        ],
+      ),
+    );
+    if (ok == true) await _setStatus(r, 'rejected', note: ctrl.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<DbRow>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final rows = snap.data ?? [];
+        if (rows.isEmpty) {
+          return const Center(child: Text('Yahan kuch nahi hai', style: TextStyle(color: kGrey)));
+        }
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: rows.length,
+            itemBuilder: (context, i) {
+              final r = rows[i];
+              final teacher = (r['profiles'] is Map) ? r['profiles'] as Map : {};
+              final desc = '${r['description'] ?? ''}';
+              return appCard(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${r['title']}',
+                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                      const SizedBox(height: 4),
+                      Text(metaLine(r), style: const TextStyle(color: kGrey)),
+                      Text('Teacher: ${teacher['full_name'] ?? '-'}  ${teacher['phone'] ?? ''}',
+                          style: const TextStyle(color: kGrey)),
+                      if (r['task_id'] != null)
+                        const Text('Ye kaam (task) ka jawab hai',
+                            style: TextStyle(color: Colors.blue, fontSize: 12)),
+                      Text(
+                          r['declaration_accepted'] == true
+                              ? 'Copyright declaration: ha, ${r['declared_at'] ?? ''}'
+                              : 'Copyright declaration: nahi',
+                          style: const TextStyle(color: kGrey, fontSize: 12)),
+                      if (desc.isNotEmpty)
+                        Padding(padding: const EdgeInsets.only(top: 6), child: Text(desc)),
+                      if ('${r['body'] ?? ''}'.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: SelectableText('${r['body']}',
+                              style: const TextStyle(fontSize: 14, height: 1.4)),
+                        ),
+                      if (widget.status == 'rejected' && '${r['admin_note'] ?? ''}'.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text('Note: ${r['admin_note']}',
+                              style: const TextStyle(color: Colors.red)),
+                        ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        children: [
+                          if (submissionLink(r) != null)
+                            OutlinedButton.icon(
+                              onPressed: () => openLink(context, submissionLink(r)!),
+                              icon: const Icon(Icons.open_in_new, size: 18),
+                              label: const Text('Dekhein'),
+                            ),
+                          if (widget.status != 'approved')
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                              onPressed: () => _setStatus(r, 'approved'),
+                              child: const Text('Approve'),
+                            ),
+                          if (widget.status != 'rejected')
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                              onPressed: () => _reject(r),
+                              child: const Text('Reject'),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Admin: kaam (task) banana aur dekhna
+class AdminTasksTab extends StatefulWidget {
+  const AdminTasksTab({super.key});
+  @override
+  State<AdminTasksTab> createState() => _AdminTasksTabState();
+}
+
+class _AdminTasksTabState extends State<AdminTasksTab> {
+  late Future<List<DbRow>> _future = _load();
+
+  Future<List<DbRow>> _load() async {
+    try {
+      await db.rpc('release_expired_tasks');
+    } catch (_) {}
+    return List<DbRow>.from(await db
+        .from('tasks')
+        .select('*, profiles(full_name, phone)')
+        .order('created_at', ascending: false));
+  }
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _add() async {
+    final ok = await Navigator.push<bool>(
+        context, MaterialPageRoute(builder: (_) => const TaskForm()));
+    if (ok == true) _refresh();
+  }
+
+  Future<void> _update(DbRow t, Map<String, dynamic> vals) async {
+    try {
+      await db.from('tasks').update(vals).eq('id', t['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  Future<void> _delete(DbRow t) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Kaam hataein?'),
+        content: Text('"${t['title']}" hata diya jayega.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Nahi')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Haan')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await db.from('tasks').delete().eq('id', t['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  @
