@@ -3125,4 +3125,315 @@ class _BankRequestFormState extends State<BankRequestForm> {
 class BankAdminTab extends StatefulWidget {
   const BankAdminTab({super.key});
   @override
-  State<BankAdminTab> createState() => _BankAdminTab
+  State<BankAdminTab> createState() => _BankAdminTabState();
+}
+
+class _BankAdminTabState extends State<BankAdminTab> {
+  late Future<List<dynamic>> _future = _load();
+
+  Future<List<dynamic>> _load() async {
+    final reqs = List<DbRow>.from(await db
+        .from('bank_requests')
+        .select('*, profiles(full_name, phone)')
+        .eq('status', 'pending')
+        .order('created_at', ascending: true));
+    final dets = List<DbRow>.from(await db
+        .from('bank_details')
+        .select('*, profiles(full_name)')
+        .order('verified_at', ascending: false));
+    return [reqs, dets];
+  }
+
+  void _refresh() => setState(() => _future = _load());
+
+  Future<void> _approve(DbRow r) async {
+    try {
+      await db.rpc('approve_bank_request', params: {'req_id': r['id']});
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  Future<void> _reject(DbRow r) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reject karein'),
+        content: TextField(
+          controller: ctrl,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+              labelText: 'Teacher ke liye note (kya galat hai)', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reject')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await db.from('bank_requests').update({
+        'status': 'rejected',
+        'admin_note': ctrl.text.trim(),
+        'decided_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', r['id']);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Nahi hua: ${errText(e)}');
+    }
+  }
+
+  Widget _heading(String t) => Padding(
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 4),
+        child: Text(t, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: kBrand)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<dynamic>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final reqs = snap.data![0] as List<DbRow>;
+        final dets = snap.data![1] as List<DbRow>;
+        final byTeacher = {for (final d in dets) '${d['teacher_id']}': d};
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 30),
+            children: [
+              _heading('Verify baaki (${reqs.length})'),
+              if (reqs.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  child: Text('Koi request nahi', style: TextStyle(color: kGrey)),
+                ),
+              for (final r in reqs)
+                appCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                            '${(r['profiles'] is Map ? r['profiles']['full_name'] : '') ?? ''}',
+                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                        Text(
+                            byTeacher.containsKey('${r['teacher_id']}')
+                                ? 'Badlaav ki request'
+                                : 'Pehli baar jodna',
+                            style: const TextStyle(color: kGrey)),
+                        if ('${r['reason'] ?? ''}'.isNotEmpty)
+                          Text('Karan: ${r['reason']}', style: const TextStyle(color: kGrey)),
+                        const Divider(),
+                        const Text('Naye details', style: TextStyle(fontWeight: FontWeight.w700)),
+                        ...bankRows(r, mask: false),
+                        if (byTeacher.containsKey('${r['teacher_id']}')) ...[
+                          const Divider(),
+                          const Text('Abhi ke verified details',
+                              style: TextStyle(fontWeight: FontWeight.w700)),
+                          ...bankRows(byTeacher['${r['teacher_id']}']!, mask: false),
+                        ],
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                              onPressed: () => _approve(r),
+                              child: const Text('Verified, Approve'),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                              onPressed: () => _reject(r),
+                              child: const Text('Reject'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              _heading('Verified accounts (${dets.length})'),
+              for (final d in dets)
+                appCard(
+                  child: ExpansionTile(
+                    shape: const Border(),
+                    collapsedShape: const Border(),
+                    title: Text('${(d['profiles'] is Map ? d['profiles']['full_name'] : '') ?? ''}',
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text(maskAcc('${d['account_number']}'),
+                        style: const TextStyle(color: kGrey)),
+                    childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                    expandedAlignment: Alignment.centerLeft,
+                    children: bankRows(d, mask: false),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: agreement likhna / badalna
+// ---------------------------------------------------------------------------
+
+class AgreementAdminTab extends StatefulWidget {
+  const AgreementAdminTab({super.key});
+  @override
+  State<AgreementAdminTab> createState() => _AgreementAdminTabState();
+}
+
+class _AgreementAdminTabState extends State<AgreementAdminTab> {
+  late Future<DbRow?> _future = fetchAgreement();
+
+  void _refresh() => setState(() => _future = fetchAgreement());
+
+  Future<void> _edit(String initial) async {
+    final ok = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => AgreementEditor(initial: initial)),
+    );
+    if (ok == true) _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<DbRow?>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator(color: kBrand));
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Data nahi aaya:\n${snap.error}', textAlign: TextAlign.center));
+        }
+        final a = snap.data;
+        final body = a == null ? '' : '${a['body']}';
+        return RefreshIndicator(
+          onRefresh: () async => _refresh(),
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 30),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 4),
+                child: Text(
+                  a == null
+                      ? 'Abhi koi agreement nahi hai'
+                      : 'Abhi ka agreement: Version ${a['version']}  (${'${a['created_at']}'.split('T').first})',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: kBrand),
+                ),
+              ),
+              if (a != null)
+                appCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: SelectableText(body, style: const TextStyle(fontSize: 14, height: 1.5)),
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: kBrand, padding: const EdgeInsets.all(14)),
+                  onPressed: () => _edit(body),
+                  icon: const Icon(Icons.edit),
+                  label: Text(a == null ? 'Agreement likhein' : 'Naya version likhein'),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                    'Save karne par naya version banta hai. Purane version ka record rehta hai, aur sab teachers ko dobara sahmati deni hogi.',
+                    style: TextStyle(color: kGrey, fontSize: 12)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class AgreementEditor extends StatefulWidget {
+  final String initial;
+  const AgreementEditor({super.key, required this.initial});
+  @override
+  State<AgreementEditor> createState() => _AgreementEditorState();
+}
+
+class _AgreementEditorState extends State<AgreementEditor> {
+  late final _c = TextEditingController(text: widget.initial);
+  bool _busy = false;
+
+  Future<void> _save() async {
+    final text = _c.text.trim();
+    if (text.isEmpty) {
+      snack(context, 'Agreement khali nahi ho sakta');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Naya version save karein?'),
+        content: const Text(
+            'Sab teachers ko dobara sahmati deni hogi, tab hi wo upload kar payenge. Purana version record me rahega.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Nahi')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Haan, save')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _busy = true);
+    try {
+      await db.from('agreements').insert({'body': text});
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _busy = false);
+        snack(context, 'Save nahi hua: ${errText(e)}');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Agreement likhein'),
+        backgroundColor: kBrand,
+        foregroundColor: Colors.white,
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : _save,
+            child: Text(_busy ? 'Ruko...' : 'Save',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: TextField(
+          controller: _c,
+          expands: true,
+          maxLines: null,
+          minLines: null,
+          textAlignVertical: TextAlignVertical.top,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+      ),
+    );
+  }
+}
